@@ -1,145 +1,120 @@
 import os
 import requests
 from flask import Flask, request, jsonify
-from google import genai
 from dotenv import load_dotenv
+from google import genai
 
+# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 
-# --- CONFIGURATION FROM ENVIRONMENT VARIABLES ---
-WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "pizza_shop_verify_123")
+# Environment variables
+WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 SHOP_OWNER_NUMBER = os.getenv("SHOP_OWNER_NUMBER")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Public Image URLs extracted from your ImgBB upload
-MENU_IMAGE_URL = os.getenv("MENU_IMAGE_URL", "https://i.ibb.co/k234Qq0L/images.jpg")
-DEALS_IMAGE_URL = os.getenv("DEALS_IMAGE_URL", "https://i.ibb.co/k2mFPhdk/images.jpg")
+MENU_IMAGE_URL = os.getenv("MENU_IMAGE_URL")
+DEALS_IMAGE_URL = os.getenv("DEALS_IMAGE_URL")
 
 # Initialize Gemini Client
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-META_API_URL = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-
-headers = {
-    "Authorization": f"Bearer {META_ACCESS_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-# --- HELPER FUNCTIONS ---
-
-def send_whatsapp_text(to_number, text_message):
-    """Sends a text message back to WhatsApp user."""
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to_number,
-        "type": "text",
-        "text": {"body": text_message}
+# Helper: Send WhatsApp Text Message
+def send_whatsapp_message(to, text):
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
     }
-    requests.post(META_API_URL, headers=headers, json=payload)
-
-def send_whatsapp_image(to_number, image_url, caption=""):
-    """Sends a hosted image back to WhatsApp user."""
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
-        "to": to_number,
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    return response.json()
+
+# Helper: Send WhatsApp Image Message
+def send_whatsapp_image(to, image_url, caption=""):
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
         "type": "image",
         "image": {
             "link": image_url,
             "caption": caption
         }
     }
-    requests.post(META_API_URL, headers=headers, json=payload)
+    response = requests.post(url, json=payload, headers=headers)
+    return response.json()
 
-def get_ai_response(user_message):
-    """Gets AI response from Google Gemini."""
-    system_instruction = (
-        "You are the friendly automated assistant for Pizza Shop. "
-        "Help customers choose items, select pizza sizes, and confirm their order details. "
-        "Keep answers short, clear, and formatted nicely for WhatsApp."
-    )
-    if not ai_client:
-        return "Thank you for reaching out! How can we assist with your order today?"
-    
-    response = ai_client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=user_message,
-        config={'system_instruction': system_instruction}
-    )
-    return response.text
-
-# --- WEBHOOK ENDPOINTS ---
-
-@app.route('/webhook', methods=['GET'])
+# 1. Webhook Verification (GET request from Meta)
+@app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    """Meta verification handshake."""
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
 
-    if mode == 'subscribe' and token == WEBHOOK_VERIFY_TOKEN:
+    if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
+        print("WEBHOOK_VERIFIED")
         return challenge, 200
-    return "Verification failed", 403
+    else:
+        return "Verification failed", 403
 
-@app.route('/webhook', methods=['POST'])
-def handle_incoming_messages():
-    """Incoming WhatsApp message handler."""
+# 2. Webhook Event Handler (POST request from Meta)
+@app.route("/webhook", methods=["POST"])
+def webhook():
     data = request.get_json()
 
     try:
-        entries = data.get('entry', [])
-        for entry in entries:
-            changes = entry.get('changes', [])
-            for change in changes:
-                value = change.get('value', {})
-                messages = value.get('messages', [])
-                
-                if messages:
-                    msg = messages[0]
-                    sender_id = msg.get('from')
-                    msg_type = msg.get('type')
+        # Check if incoming payload contains messages
+        if (
+            data.get("entry") and
+            data["entry"][0].get("changes") and
+            data["entry"][0]["changes"][0].get("value") and
+            "messages" in data["entry"][0]["changes"][0]["value"]
+        ):
+            message_data = data["entry"][0]["changes"][0]["value"]["messages"][0]
+            sender_id = message_data["from"]  # Customer's WhatsApp number
 
-                    if msg_type == 'text':
-                        text_body = msg.get('text', {}).get('body', '').lower()
+            if message_data.get("type") == "text":
+                user_msg = message_data["text"]["body"].strip().lower()
 
-                        # TRIGGER 1: Request Deals Image
-                        if any(keyword in text_body for keyword in ['deal', 'deals', 'offer', 'offers', 'discount']):
-                            send_whatsapp_image(sender_id, DEALS_IMAGE_URL, caption="🔥 Here are our special Pizza Deals!")
-                            send_whatsapp_text(sender_id, "Tell me which deal you'd like to order!")
-
-                        # TRIGGER 2: Request Full Menu Image
-                        elif any(keyword in text_body for keyword in ['menu', 'list', 'card', 'picture']):
-                            send_whatsapp_image(sender_id, MENU_IMAGE_URL, caption="🍕 Here is our complete Menu!")
-                            send_whatsapp_text(sender_id, "Let me know what you'd like to order!")
-
-                        # TRIGGER 3: Order Confirmation / Checkout
-                        elif any(keyword in text_body for keyword in ['confirm order', 'place order', 'cod', 'cash on delivery']):
-                            confirmation_msg = (
-                                "✅ *Order Received!*\n\n"
-                                "Your order has been logged successfully for **Cash on Delivery (COD)**.\n"
-                                "Our team is preparing your pizza right now!"
-                            )
-                            send_whatsapp_text(sender_id, confirmation_msg)
-                            
-                            # Alert Shop Owner
-                            if SHOP_OWNER_NUMBER:
-                                owner_alert = f"🚨 *NEW ORDER ALERT*\nFrom: +{sender_id}\nOrder Text: {text_body}"
-                                send_whatsapp_text(SHOP_OWNER_NUMBER, owner_alert)
-
-                        # TRIGGER 4: General AI Order Helper
-                        else:
-                            reply = get_ai_response(text_body)
-                            send_whatsapp_text(sender_id, reply)
+                # Fast Keyword Routing for Media
+                if "menu" in user_msg:
+                    send_whatsapp_image(sender_id, MENU_IMAGE_URL, "Here is our latest Menu! 🍕")
+                elif "deal" in user_msg or "offer" in user_msg:
+                    send_whatsapp_image(sender_id, DEALS_IMAGE_URL, "Check out our special deals! 🔥")
+                else:
+                    # Pass general customer queries to Gemini AI
+                    prompt = (
+                        "You are an energetic, friendly customer service agent for a Pizza Restaurant. "
+                        "Keep your response concise, polite, and helpful (under 3 sentences). "
+                        f"Customer asked: '{message_data['text']['body']}'"
+                    )
+                    
+                    ai_response = ai_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    )
+                    
+                    bot_reply = ai_response.text if ai_response and ai_response.text else "Sorry, I am having trouble answering right now."
+                    send_whatsapp_message(sender_id, bot_reply)
 
     except Exception as e:
-        print(f"Error handling webhook: {e}")
+        print(f"Error processing webhook event: {e}")
 
     return jsonify({"status": "success"}), 200
 
-if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
