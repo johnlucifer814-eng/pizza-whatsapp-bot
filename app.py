@@ -87,18 +87,16 @@ def webhook():
                     send_whatsapp_image(sender_id, DEALS_IMAGE_URL, "Check out our special deals! 🔥")
                 else:
                     try:
-                        from google import genai
-                        ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                        prompt = (
-                            "You are a helpful customer service assistant for a Pizza Restaurant. "
-                            "Keep answers short and polite (under 3 sentences). "
-                            f"Customer message: '{message_data['text']['body']}'"
-                        )
-                        ai_response = ai_client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=prompt
-                        )
-                        bot_reply = ai_response.text if ai_response and ai_response.text else "How can I help you today?"
+                        ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+                        ai_headers = {"Content-Type": "application/json"}
+                        ai_payload = {
+                            "contents": [{
+                                "parts": [{"text": f"You are a helpful customer service assistant for a Pizza Restaurant. Keep answers short and polite (under 3 sentences). Customer message: '{message_data['text']['body']}'"}]
+                            }]
+                        }
+                        ai_res = requests.post(ai_url, json=ai_payload, headers=ai_headers)
+                        ai_data = ai_res.json()
+                        bot_reply = ai_data['candidates'][0]['content']['parts'][0]['text']
                     except Exception as ai_err:
                         print(f"Gemini AI Error: {ai_err}")
                         bot_reply = "Thank you for reaching out! How can we assist you with your pizza order today?"
